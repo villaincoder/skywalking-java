@@ -18,9 +18,6 @@
 
 package org.apache.skywalking.apm.plugin.jetty.v9.server;
 
-import java.lang.reflect.Method;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import org.apache.skywalking.apm.agent.core.context.CarrierItem;
 import org.apache.skywalking.apm.agent.core.context.ContextCarrier;
 import org.apache.skywalking.apm.agent.core.context.ContextManager;
@@ -32,11 +29,16 @@ import org.apache.skywalking.apm.agent.core.plugin.interceptor.enhance.InstanceM
 import org.apache.skywalking.apm.agent.core.plugin.interceptor.enhance.MethodInterceptResult;
 import org.apache.skywalking.apm.agent.core.util.MethodUtil;
 import org.apache.skywalking.apm.network.trace.component.ComponentsDefine;
+import org.apache.skywalking.apm.plugin.jetty.v9.server.define.JettyInstrumentation;
 import org.eclipse.jetty.server.HttpChannel;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.lang.reflect.Method;
 
 public class HandleInterceptor implements InstanceMethodsAroundInterceptor {
 
-    private static boolean IS_SERVLET_GET_STATUS_METHOD_EXIST;
+    private static final boolean IS_SERVLET_GET_STATUS_METHOD_EXIST;
     private static final String SERVLET_RESPONSE_CLASS = "javax.servlet.http.HttpServletResponse";
     private static final String GET_STATUS_METHOD = "getStatus";
 
@@ -46,43 +48,46 @@ public class HandleInterceptor implements InstanceMethodsAroundInterceptor {
 
     @Override
     public void beforeMethod(EnhancedInstance objInst, Method method, Object[] allArguments, Class<?>[] argumentsTypes,
-        MethodInterceptResult result) throws Throwable {
-        HttpChannel httpChannel = (HttpChannel) objInst;
-        HttpServletRequest servletRequest = httpChannel.getRequest();
+                             MethodInterceptResult result) throws Throwable {
+        if (JettyInstrumentation.METHOD_HANDLE.equals(method.getName())) {
+            HttpChannel<?> httpChannel = (HttpChannel<?>) objInst;
+            HttpServletRequest servletRequest = httpChannel.getRequest();
 
-        ContextCarrier contextCarrier = new ContextCarrier();
+            ContextCarrier contextCarrier = new ContextCarrier();
 
-        CarrierItem next = contextCarrier.items();
-        while (next.hasNext()) {
-            next = next.next();
-            next.setHeadValue(servletRequest.getHeader(next.getHeadKey()));
+            CarrierItem next = contextCarrier.items();
+            while (next.hasNext()) {
+                next = next.next();
+                next.setHeadValue(servletRequest.getHeader(next.getHeadKey()));
+            }
+
+            AbstractSpan span = ContextManager.createEntrySpan(servletRequest.getRequestURI(), contextCarrier);
+            Tags.URL.set(span, servletRequest.getRequestURL().toString());
+            Tags.HTTP.METHOD.set(span, servletRequest.getMethod());
+            span.setComponent(ComponentsDefine.JETTY_SERVER);
+            SpanLayer.asHttp(span);
+        } else if (JettyInstrumentation.METHOD_ON_COMPLETED.equals(method.getName())) {
+            HttpChannel<?> httpChannel = (HttpChannel<?>) objInst;
+            HttpServletResponse servletResponse = httpChannel.getResponse();
+            AbstractSpan span = ContextManager.activeSpan();
+            if (IS_SERVLET_GET_STATUS_METHOD_EXIST && servletResponse.getStatus() >= 400) {
+                span.errorOccurred();
+                Tags.HTTP_RESPONSE_STATUS_CODE.set(span, servletResponse.getStatus());
+            }
+            ContextManager.stopSpan();
+            ContextManager.getRuntimeContext().remove(Constants.FORWARD_REQUEST_FLAG);
         }
-
-        AbstractSpan span = ContextManager.createEntrySpan(servletRequest.getRequestURI(), contextCarrier);
-        Tags.URL.set(span, servletRequest.getRequestURL().toString());
-        Tags.HTTP.METHOD.set(span, servletRequest.getMethod());
-        span.setComponent(ComponentsDefine.JETTY_SERVER);
-        SpanLayer.asHttp(span);
     }
 
     @Override
     public Object afterMethod(EnhancedInstance objInst, Method method, Object[] allArguments, Class<?>[] argumentsTypes,
-        Object ret) throws Throwable {
-        HttpChannel httpChannel = (HttpChannel) objInst;
-        HttpServletResponse servletResponse = httpChannel.getResponse();
-        AbstractSpan span = ContextManager.activeSpan();
-        if (IS_SERVLET_GET_STATUS_METHOD_EXIST && servletResponse.getStatus() >= 400) {
-            span.errorOccurred();
-            Tags.HTTP_RESPONSE_STATUS_CODE.set(span, servletResponse.getStatus());
-        }
-        ContextManager.stopSpan();
-        ContextManager.getRuntimeContext().remove(Constants.FORWARD_REQUEST_FLAG);
+                              Object ret) throws Throwable {
         return ret;
     }
 
     @Override
     public void handleMethodException(EnhancedInstance objInst, Method method, Object[] allArguments,
-        Class<?>[] argumentsTypes, Throwable t) {
+                                      Class<?>[] argumentsTypes, Throwable t) {
         ContextManager.activeSpan().log(t);
     }
 }
