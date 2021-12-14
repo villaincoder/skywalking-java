@@ -48,11 +48,16 @@ import org.apache.tomcat.util.http.Parameters;
  */
 public class TomcatInvokeInterceptor implements InstanceMethodsAroundInterceptor {
 
+    private static boolean IS_SERVLET_CONTAINS_HEADER_METHOD_EXIST;
     private static boolean IS_SERVLET_GET_STATUS_METHOD_EXIST;
     private static final String SERVLET_RESPONSE_CLASS = "javax.servlet.http.HttpServletResponse";
+    private static final String CONTAINS_HEADER_METHOD = "containsHeader";
     private static final String GET_STATUS_METHOD = "getStatus";
 
     static {
+        IS_SERVLET_CONTAINS_HEADER_METHOD_EXIST = MethodUtil.isMethodExist(
+                TomcatInvokeInterceptor.class.getClassLoader(), SERVLET_RESPONSE_CLASS, CONTAINS_HEADER_METHOD,
+                String.class.getName());
         IS_SERVLET_GET_STATUS_METHOD_EXIST = MethodUtil.isMethodExist(
             TomcatInvokeInterceptor.class.getClassLoader(), SERVLET_RESPONSE_CLASS, GET_STATUS_METHOD);
     }
@@ -93,8 +98,11 @@ public class TomcatInvokeInterceptor implements InstanceMethodsAroundInterceptor
         HttpServletResponse response = (HttpServletResponse) allArguments[1];
 
         AbstractSpan span = ContextManager.activeSpan();
+        boolean businessError = IS_SERVLET_CONTAINS_HEADER_METHOD_EXIST && response.containsHeader("Error-Code");
         if (IS_SERVLET_GET_STATUS_METHOD_EXIST && response.getStatus() >= 400) {
-            span.errorOccurred();
+            if (!businessError) {
+                span.errorOccurred();
+            }
             Tags.HTTP_RESPONSE_STATUS_CODE.set(span, response.getStatus());
         }
         // Active HTTP parameter collection automatically in the profiling context.
